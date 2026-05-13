@@ -1,0 +1,224 @@
+desc: DOOM INSTRUMENT FX Chain 01 (RML, Metasonix, WMD, Dwarfcraft)
+// MIT License
+
+slider1:0<0,1,1{Выкл,Вкл}>1. Retro Mechanical Labs (Filter/Dist)
+slider2:800<20,18000,1:log>   RML: Частота среза (Гц)
+slider3:0.6<0,0.98,0.01>      RML: Резонанс (Feedback)
+slider4:20<1,100,0.1>         RML: Входное усиление
+slider5:0.1<0,2,0.01>         RML: Скорость LFO (Гц)
+
+slider10:0<0,1,1{Выкл,Вкл}>2. Metasonix KV-100 Assblaster
+slider11:10<1,60,0.1>         KV100: Драйв TM-7
+slider12:0.3<0,1,0.01>        KV100: Интенсивность Pulser
+slider13:220<40,3000,1>       KV100: Частота Thyratron VCO
+slider14:0<0,1,0.01>          KV100: Смешивание VCO
+
+slider20:0<0,1,1{Выкл,Вкл}>3. WMD Geiger Counter
+slider21:44100<260,44100,1:log>GC: Частота дискретизации (Гц)
+slider22:8<1,8,1>              GC: Битовая глубина
+slider23:0<0,1,1{Bits,Mask}>   GC: Режим деградации
+slider24:255<0,255,1>          GC: Значение маски (0-255)
+
+slider30:0<0,1,1{Выкл,Вкл}>4. Dwarfcraft Shiva
+slider31:40<1,100,1>           Shiva: Уровень фузза
+slider32:0<0,1,0.01>           Shiva: Starve (Голодание)
+slider33:0<0,1,1{Выкл,Вкл}>    Shiva: Октава вверх
+
+
+slider40:15<1,500,1>          ENV: Attack (ms)
+slider41:150<10,2000,1>       ENV: Release (ms)
+
+@init
+
+function tanh(x) local(ex, emx) (
+  x > 20 ? 1 : x < -20 ? -1 : (
+    ex = exp(x);
+    emx = exp(-x);
+    (ex - emx) / (ex + emx);
+  );
+);
+
+s1 = s2 = s3 = s4 = 0; 
+vco_phi = lfo_phi = 0;
+sh_last_val = sh_counter = 0;
+last_sig_kv = 0;
+env_val = 0;
+dc_block_state = 0;
+
+
+scope_sz = 512;
+scope_idx = 0;
+
+@slider
+rml_f = 2 * $pi * slider2 / srate;
+rml_q = slider3;
+rml_lfo_step = 2 * $pi * slider5 / srate;
+
+kv_vco_step = 2 * $pi * slider13 / srate;
+
+gc_step = max(1, srate / slider21);
+gc_quant = 2 ^ slider22;
+
+shiva_g = slider31;
+shiva_s = slider32;
+
+
+env_atk = exp(-1000 / (slider40 * srate));
+env_rel = exp(-1000 / (slider41 * srate));
+
+@sample
+input_mono = (spl0 + spl1) * 0.5;
+
+
+input_abs = abs(input_mono);
+input_abs > env_val ? 
+  env_val = env_atk * env_val + (1 - env_atk) * input_abs : 
+  env_val = env_rel * env_val + (1 - env_rel) * input_abs;
+
+ 
+slider1 ? (
+  lfo_mod = sin(lfo_phi) * 0.15;
+  lfo_phi += rml_lfo_step;
+  
+  in_rml = tanh(spl0 * slider4);
+  f_eff = min(0.95, max(0.01, rml_f * (1 + lfo_mod)));
+  
+  fb = in_rml - (4 * rml_q * s4);
+  s1 = s1 + f_eff * (tanh(fb) - s1);
+  s2 = s2 + f_eff * (s1 - s2);
+  s3 = s3 + f_eff * (s2 - s3);
+  s4 = s4 + f_eff * (s3 - s4);
+  
+  spl0 = spl1 = s4;
+);
+
+
+slider10 ? (
+  sig_kv = spl0 * slider11;
+  sig_kv > 0 ? sig_kv = tanh(sig_kv) : sig_kv = 0.7 * tanh(sig_kv * 1.3);
+  
+  diff = sig_kv - last_sig_kv;
+  abs(diff) > 0.5 ? sig_kv += (rand(2)-1) * slider12;
+  last_sig_kv = sig_kv;
+  
+  vco_phi += kv_vco_step;
+  threshold = 2 * $pi + (rand(0.2) - 0.1);
+  vco_phi >= threshold ? vco_phi -= threshold;
+  vco_out = (vco_phi / $pi) - 1; 
+  
+  
+  vca = min(1, env_val * 10); 
+  vco_out *= vca;
+  sig_kv *= vca;
+  
+  spl0 = spl1 = (sig_kv * (1 - slider14)) + (vco_out * slider14);
+);
+
+
+slider20 ? (
+  sh_counter += 1;
+  sh_counter >= gc_step ? (
+    sh_last_val = spl0;
+    sh_counter -= gc_step; // Более точный сброс фазы
+  );
+  sig_gc = sh_last_val;
+  
+  slider23 == 0 ? (
+    sig_gc = floor(sig_gc * gc_quant + 0.5) / gc_quant;
+  ) : (
+    i_val = floor((sig_gc + 1) * 127.5);
+    i_val = i_val & slider24;
+    sig_gc = (i_val / 127.5) - 1;
+  );
+  
+  
+  dc_block_state = sig_gc - last_gc_in + 0.995 * dc_block_state;
+  last_gc_in = sig_gc;
+  sig_gc = dc_block_state;
+  
+  spl0 = spl1 = sig_gc;
+);
+
+
+slider30 ? (
+  sig_sh = spl0;
+  slider33 ? sig_sh = abs(sig_sh) * 2 - 1;
+  
+  s_gate = shiva_s * 0.15;
+  
+  gate_factor = max(0, min(1, (abs(sig_sh) - s_gate) * 10)); 
+  
+  sig_sh *= shiva_g * gate_factor;
+  sig_sh = tanh(sig_sh); 
+  
+  spl0 = spl1 = sig_sh;
+);
+
+
+scope_idx[0] = spl0;
+scope_idx = (scope_idx + 1) % scope_sz;
+
+
+@gfx 400 300
+
+gfx_r=0.15; gfx_g=0.15; gfx_b=0.15; gfx_a=1;
+gfx_rect(0, 0, gfx_w, gfx_h);
+
+
+gfx_r=0.2; gfx_g=1.0; gfx_b=0.8; 
+scope_y = gfx_h * 0.25;
+scope_h = gfx_h * 0.2;
+gfx_x = 0; gfx_y = scope_y;
+
+i = 0;
+while (i < gfx_w) (
+  
+  buf_pos = floor((i / gfx_w) * scope_sz);
+  val = buf_pos[0];
+  next_y = scope_y - (val * scope_h);
+  gfx_lineto(i, next_y, 1);
+  i += 1;
+);
+
+
+gfx_r=0.3; gfx_g=0.3; gfx_b=0.3;
+gfx_line(0, gfx_h * 0.5, gfx_w, gfx_h * 0.5);
+
+
+btn_w = 60; btn_h = 40; 
+pad = 10;
+start_x = 20; start_y = gfx_h * 0.5 + 20;
+
+function draw_btn(x, y, w, h, state, label) (
+  state ? (gfx_r=0.8; gfx_g=0.8; gfx_b=0.8;) : (gfx_r=0.25; gfx_g=0.25; gfx_b=0.25;);
+  gfx_rect(x, y, w, h);
+  gfx_r=1; gfx_g=1; gfx_b=1; 
+  gfx_x = x + 5; gfx_y = y + 15;
+  gfx_drawstr(label);
+);
+
+draw_btn(start_x, start_y, btn_w, btn_h, slider1, "RML");
+draw_btn(start_x + btn_w + pad, start_y, btn_w, btn_h, slider10, "KV100");
+draw_btn(start_x, start_y + btn_h + pad, btn_w, btn_h, slider20, "WMD");
+draw_btn(start_x + btn_w + pad, start_y + btn_h + pad, btn_w, btn_h, slider30, "SHIVA");
+
+
+slider_w = 20; slider_max_h = 100;
+sl_x1 = gfx_w - 80; sl_x2 = gfx_w - 40;
+sl_base_y = gfx_h - 20;
+
+
+h_atk = (slider40 / 500) * slider_max_h;
+h_rel = (slider41 / 2000) * slider_max_h;
+
+
+gfx_r=0.2; gfx_g=0.2; gfx_b=0.2; gfx_rect(sl_x1, sl_base_y - slider_max_h, slider_w, slider_max_h);
+gfx_r=1.0; gfx_g=0.4; gfx_b=0.0; 
+gfx_rect(sl_x1, sl_base_y - h_atk, slider_w, h_atk);
+gfx_r=1; gfx_g=1; gfx_b=1; gfx_x = sl_x1; gfx_y = sl_base_y + 5; gfx_drawstr("A");
+
+
+gfx_r=0.2; gfx_g=0.2; gfx_b=0.2; gfx_rect(sl_x2, sl_base_y - slider_max_h, slider_w, slider_max_h);
+gfx_r=1.0; gfx_g=0.4; gfx_b=0.0;
+gfx_rect(sl_x2, sl_base_y - h_rel, slider_w, h_rel);
+gfx_r=1; gfx_g=1; gfx_b=1; gfx_x = sl_x2; gfx_y = sl_base_y + 5; gfx_drawstr("R");
