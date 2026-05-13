@@ -1,0 +1,139 @@
+desc:DOOM INSTRUMENT FX Chain 04 (Amp, Room, Feedback, 3-Band EQ)
+// MIT License
+
+slider1:0<0,4,1{British Crunch,Logic High-Gain,Vintage Tube,Modern Bass+,Brown Logic}>Amp Type
+slider2:0.5<0,1,0.01>Gain (Drive)
+slider3:0.2<0,1,0.01>Starve (Logic Chaos)
+slider4:0.3<0,1,0.01>Feedback Intensity
+slider5:15<2,100,1>Mic Distance (ms)
+slider6:1<0,2,1{Garage,Studio,Cathedral}>Room Type
+
+slider10:0<-15,15,1>Bass (100Hz)
+slider11:0<-15,15,1>Middle (800Hz)
+slider12:0<-15,15,1>Treble (4kHz)
+
+slider20:0.01<0,0.1,0.001>Gate Threshold
+slider21:0.8<0,1,0.01>Master Volume
+
+@init
+
+freembuf(0); delay_buf = 0; delay_pos = 0; delay_len = srate * 2;
+env = 0; fb_val = 0; fb_timer = 0; gate_smooth = 0;
+lp_out = 0; hp_out = 0;
+
+
+eq_l=0; eq_m=0; eq_h=0;
+
+
+
+function tube_sat(x, warmth) local(bias, out) (
+  bias = warmth * 0.15;
+  out = x + bias;
+  out = out + (out^2) * warmth * 0.4;
+  out > 1.2 ? out = 1.2 : (out < -1.2 ? out = -1.2 : out = out - (out^3)/3);
+  out - bias;
+);
+
+function logic_clip(x, g, s) local(sig) (
+  sig = x * g * s;
+  abs(sig) < (1-s)*0.4 ? sig = 0;
+  sig > 0.8 ? 0.85 : (sig < -0.8 ? -0.85 : sig - (sig^3)/3);
+);
+
+@slider
+s_val = 1.01 - slider3;
+g_val = slider2 * 85;
+dist_samples = (slider5 / 1000) * srate;
+room_mult = slider6 == 0 ? 0.5 : slider6 == 1 ? 1.2 : 4;
+
+
+b_gain = 2 ^ (slider10 / 6);
+m_gain = 2 ^ (slider11 / 6);
+t_gain = 2 ^ (slider12 / 6);
+
+@sample
+s_raw = spl0;
+
+
+env = max(abs(s_raw), env * 0.9997);
+
+
+s_in = s_raw + (fb_val * slider4);
+
+
+type = slider1;
+type == 0 ? ( s_amp = logic_clip(s_in, g_val * 0.5, 1) * 1.3; ) :
+type == 1 ? ( s_amp = logic_clip(s_in, g_val * 1.6, s_val); ) :
+type == 2 ? ( s_amp = tube_sat(s_in * g_val * 0.5, 0.4); ) :
+type == 3 ? ( s_amp = logic_clip(s_in, g_val, 0.9); lp_out = lp_out * 0.8 + s_in * 0.2; s_amp += lp_out * 2.5; ) :
+            ( s_amp = logic_clip(s_in + 0.05, g_val * 1.2, s_val) * 1.5; );
+
+
+hp_out = hp_out * 0.9 + s_amp * 0.1;
+s_mic = tube_sat(s_amp - hp_out, 0.2);
+
+
+delay_buf[delay_pos] = s_mic;
+read_pos = delay_pos - dist_samples;
+read_pos < 0 ? read_pos += delay_len;
+s_room = delay_buf[read_pos];
+delay_pos += 1; delay_pos >= delay_len ? delay_pos = 0;
+
+eq_l = eq_l + 0.1 * (s_room - eq_l);
+bass_p = eq_l * b_gain;
+
+
+eq_m = eq_m + 0.2 * (s_room - eq_m);
+mid_p = (eq_m - eq_l) * m_gain;
+
+
+eq_h = eq_h + 0.6 * (s_room - eq_h);
+treble_p = (s_room - eq_h) * t_gain;
+
+s_eq = bass_p + mid_p + treble_p;
+
+
+abs(s_eq) > 0.8 ? fb_timer += 1 : fb_timer *= 0.999;
+fb_limit = max(0, 1 - (fb_timer / 18000)); 
+fb_val = s_eq * fb_limit;
+
+
+gate = env > slider20 ? 1 : 0;
+gate_smooth = gate_smooth * 0.93 + gate * 0.07;
+final = s_eq * gate_smooth;
+
+final > 0.98 ? final = 0.98 : (final < -0.98 ? final = -0.98);
+spl0 = spl1 = final * slider21;
+
+@gfx 550 450
+gfx_r=0.04; gfx_g=0.04; gfx_b=0.05; gfx_a=1; gfx_rect(0,0,gfx_w,gfx_h);
+
+
+gfx_r=1; gfx_g=0.5; gfx_b=0; gfx_setfont(1, "Courier New", 18, 'b');
+gfx_x=20; gfx_y=20; gfx_drawstr("METACRAFT ULTIMATE: HYBRID AMP");
+
+
+gfx_r=1; gfx_g=1; gfx_b=1; gfx_a=0.5;
+gfx_rect(40, 360, 40, -slider10*4); // Bass
+gfx_rect(90, 360, 40, -slider11*4); // Mid
+gfx_rect(140, 360, 40, -slider12*4); // Treble
+gfx_x=45; gfx_y=370; gfx_drawstr("B   M   T");
+
+
+gfx_r=1; gfx_g=0.3; gfx_b=0; gfx_a=fb_limit;
+i=0; loop(8,
+  r = (delay_pos % 100) * room_mult * 0.4 + i*15;
+  gfx_circle(gfx_w/2 + 80, 200, r, 0);
+  i+=1;
+);
+
+
+gfx_x=20; gfx_y=410;
+fb_timer > 4000 ? ( gfx_r=1; gfx_g=0; gfx_b=0; gfx_drawstr("PROTECTION: REDUCING FEEDBACK"); )
+                : ( gfx_r=0; gfx_g=1; gfx_b=0; gfx_drawstr("PROTECTION: READY"); );
+
+
+gfx_r=0.6; gfx_g=0.6; gfx_b=0.6;
+gfx_rect(20, 100, 10, 200); 
+gfx_circle(20 + slider5*4, 200, 8, 1); 
+gfx_x=30; gfx_y=80; gfx_drawstr("MIC POSITION");
