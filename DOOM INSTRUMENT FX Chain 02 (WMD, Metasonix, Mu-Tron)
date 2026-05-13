@@ -1,0 +1,111 @@
+desc: DOOM INSTRUMENT FX Chain 02 (WMD, Metasonix, Mu-Tron)
+// MIT License
+
+slider1:0<0,1,1{Off,On}>1. WMD Geiger Counter
+slider2:0<0,1,1{Off,On}>2. Metasonix TX-3
+slider3:0<0,1,1{Off,On}>3. Mu-Tron III
+slider4:0<0,1,1{Off,On}>4. Mu-Tron Bi-Phase
+slider5:-60<-100,0,1>Gate Threshold (dB)
+slider6:0.5<0,1,0.01>Geiger Crush
+slider7:0.7<0,1,0.01>TX-3 Drive (Tube Heat)
+slider8:0.5<0,1,0.01>Mu-Tron Sens
+slider9:0.5<0,0.95,0.01>Mu-Tron Resonance
+slider10:0.5<0,1,0.01>Phaser Dyn Sens
+slider11:0<0,1,0.01>Final Clip Mode (Soft -> Hard)
+slider12:0<0,1,0.01>Dynamic Feedback (Envelope Linked)
+
+@init
+bp_phi = 0;
+env = 0;
+gate_gain = 0;
+m3_low = 0;
+m3_band = 0;
+fb_lp = 0; 
+feedback_sample = 0;
+
+@sample
+s0 = spl0;
+
+
+_abs0 = abs(s0);
+_abs0 > env ? env = _abs0 : env *= 0.9999;
+
+
+
+_fb_amount = slider12 * env * 0.9; 
+
+fb_lp += 0.2 * (feedback_sample - fb_lp);
+s0 += fb_lp * _fb_amount;
+
+
+slider1 ? (
+  s0 = floor(s0 * (1/slider6)) * slider6;
+  s0 = sin(s0 * $pi * 2); 
+);
+
+
+slider2 ? (
+  _drive = 1 + slider7 * 20;
+  _bias = 0.25;
+  s0 = s0 * _drive + _bias;
+  s0 = (s0 > 1) ? 1 : (s0 < -1) ? -1 : (1.5 * s0 - 0.5 * s0^3);
+  s0 -= _bias * 0.9;
+);
+
+
+slider3 ? (
+  _cutoff = 150 + env * 6500 * slider8;
+  _f = 2 * $pi * _cutoff / srate;
+  _q = 1.0 - slider9; 
+  m3_high = s0 - m3_low - _q * m3_band;
+  m3_band = _f * m3_high + m3_band;
+  m3_low = m3_low + _f * m3_band;
+  s0 = m3_band;
+  
+  feedback_sample = s0; 
+);
+
+
+slider4 ? (
+  _dyn_rate = (0.05 + env * 2.5 * slider10) * 2 * $pi / srate;
+  bp_phi += _dyn_rate;
+  _lfo = (sin(bp_phi) + 1) * 0.5;
+  _apf_out = (s0 - _lfo) / (1 + _lfo * s0);
+  s0 = (s0 + _apf_out) * 0.5;
+);
+
+
+_limit = 0.95;
+_softness = 1.0 - slider11;
+(abs(s0) > _limit * _softness) ? (
+  _sign = s0 > 0 ? 1 : -1;
+  slider11 > 0.9 ? ( s0 = _sign * _limit; ) : (
+    _over = (abs(s0) - _limit * _softness) / (1 - _limit * _softness);
+    s0 = _sign * (_limit * _softness + (1 - _limit * _softness) * sin(_over * $pi * 0.5));
+  );
+);
+
+
+_thresh = 2^(slider5/6);
+env > _thresh ? gate_gain = 1 : gate_gain *= 0.98;
+
+spl0 = s0 * gate_gain;
+spl1 = s0 * gate_gain;
+
+@gfx 400 350
+gfx_set(0.04, 0.04, 0.06, 1);
+gfx_rect(0,0,gfx_w,gfx_h);
+
+
+gfx_set(1, 1, 0, 1);
+gfx_rect(10, 330, (gfx_w-20) * (_fb_amount / 0.9), 5);
+gfx_x = 10; gfx_y = 310; gfx_drawstr("DYNAMIC FEEDBACK ACTIVE");
+
+
+gfx_set(0, 1, 0.5, 0.8);
+gfx_x = 0; gfx_y = 180;
+idx = 0;
+while(idx < gfx_w)(
+  gfx_lineto(idx, 180 + spl0 * 100);
+  idx += 3;
+);
