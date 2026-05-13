@@ -1,0 +1,147 @@
+desc: DOOM INSTRUMENT FX Chain 03 (EP3, P77, Akai, 6G15)
+// MIT License
+
+slider1:0<0,1,1{Off,On}>EP-3: Bypass/On
+slider2:300<1,1000,1>EP-3: Echo Time (ms)
+slider3:0.3<0,1,0.01>EP-3: Echo Feedback
+slider4:0<0,1,1{Off,On}>P77: Bypass/On
+slider5:0.5<0,1,0.01>P77: Tube Drive
+slider6:0<0,1,1{Off,On}>Akai: Bypass/On
+slider7:0.4<0,1,0.01>Akai: Tape Warmth
+slider8:0.2<0,1,0.01>Akai: Tape Wear (Filter)
+slider9:0<0,1,1{Off,On}>6G15: Bypass/On
+slider10:0.5<0,1,0.01>6G15: Reverb Dwell (Feedback)
+slider11:0.5<0,1,0.01>Master: Clipper (Soft-Hard)
+slider12:0.5<0,1,0.01>Env: Sensitivity
+slider13:10<1,100,1>Env: Attack (ms)
+slider14:100<1,500,1>Env: Release (ms)
+
+@init
+function tanh(x) ( (exp(2*x) - 1) / (exp(2*x) + 1); );
+
+
+delay_pos = 0;
+buf_size = srate * 2;
+delay_buf_l = 0;
+delay_buf_r = buf_size + 1;
+rb_size = srate * 0.2; 
+rb_p1 = (delay_buf_r * 2) + 1000;
+rb_p2 = rb_p1 + rb_size;
+rb_p3 = rb_p2 + rb_size;
+rb_idx = 0;
+
+follower = 0;
+lfo_pos = 0;
+prev_s0 = 0;
+prev_s1 = 0;
+
+@slider
+t_delay = (slider2 / 1000) * srate;
+wear_freq = 20000 - (slider8 * 18000);
+w0 = 2 * $pi * wear_freq / srate;
+coeff = sin(w0) / (sin(w0) + 1);
+
+
+att_coeff = exp(-1.0 / (slider13 / 1000.0 * srate));
+rel_coeff = exp(-1.0 / (slider14 / 1000.0 * srate));
+
+@sample
+s0 = spl0;
+s1 = spl1;
+
+
+slider1 ? (
+  wow = sin(play_pos * 0.0001) * 0.002; 
+  pos_l = (delay_pos - t_delay * (1 + wow)) % buf_size;
+  pos_l < 0 ? pos_l += buf_size;
+  echo_l = delay_buf_l[pos_l|0];
+  delay_buf_l[delay_pos|0] = s0 + echo_l * slider3;
+  s0 += echo_l * 0.5; s1 += echo_l * 0.5;
+);
+
+
+slider4 ? (
+  drive = 1 + (slider5 * 15);
+  s0 = tanh(s0 * drive); s1 = tanh(s1 * drive);
+);
+
+
+slider6 ? (
+  sat = slider7 * 3;
+  s0 = sign(s0) * (1 - exp(-abs(s0 * sat)));
+  s1 = sign(s1) * (1 - exp(-abs(s1 * sat)));
+  s0 = (coeff * s0) + ((1 - coeff) * prev_s0);
+  s1 = (coeff * s1) + ((1 - coeff) * prev_s1);
+  prev_s0 = s0; prev_s1 = s1;
+);
+
+
+slider9 ? (
+  rvb_in = (s0 + s1) * 0.5;
+  dwell = slider10 * 0.88;
+  lfo = sin(lfo_pos) * 15; lfo_pos += 0.0005; 
+  idx1 = abs(rb_idx - (1450 + lfo)) % rb_size;
+  idx2 = abs(rb_idx - (2170 - lfo)) % rb_size;
+  idx3 = abs(rb_idx - 3620) % rb_size;
+  r1 = rb_p1[idx1|0]; r2 = rb_p2[idx2|0]; r3 = rb_p3[idx3|0];
+  rvb_sig = (r1 + r2 + r3) * 0.4;
+  rb_p1[rb_idx % rb_size] = rvb_in + r3 * dwell;
+  rb_p2[rb_idx % rb_size] = r1 * 0.95;
+  rb_p3[rb_idx % rb_size] = r2 * 0.95;
+  s0 += rvb_sig; s1 += rvb_sig;
+  rb_idx += 1;
+);
+
+
+env_in = max(abs(s0), abs(s1)) * slider12;
+follower = (env_in > follower) ? 
+           (env_in + att_coeff * (follower - env_in)) : 
+           (env_in + rel_coeff * (follower - env_in));
+
+
+thresh = 1.0 - (slider11 * 0.6);
+s0 = max(min(s0, thresh), -thresh);
+s1 = max(min(s1, thresh), -thresh);
+
+spl0 = s0 * (1 + slider11 * 0.5);
+spl1 = s1 * (1 + slider11 * 0.5);
+
+delay_pos += 1;
+delay_pos >= buf_size ? delay_pos = 0;
+
+@gfx 500 420
+gfx_r = 0.12; gfx_g = 0.12; gfx_b = 0.12; gfx_a = 1;
+gfx_rect(0,0,gfx_w,gfx_h);
+
+
+gfx_r = 1; gfx_g = 0.5; gfx_b = 0; gfx_a = 0.8;
+gfx_circle(gfx_w - 70, 70, 10 + (follower * 100), 1);
+
+gfx_r = 0.8; gfx_g = 0.8; gfx_b = 0.8; gfx_a = 1;
+gfx_x = 30; gfx_y = 35;
+gfx_setfont(1, "Arial", 20, 'b');
+gfx_drawstr("ANALOG SIGNAL PATH");
+
+function draw_node(x, y, txt, active, col_r, col_g, col_b) (
+  gfx_r = col_r; gfx_g = col_g; gfx_b = col_b; gfx_a = active ? 0.6 : 0.1;
+  gfx_roundrect(x, y, 100, 70, 8, 1); 
+  gfx_r = col_r; gfx_g = col_g; gfx_b = col_b; gfx_a = active ? 1 : 0.3;
+  gfx_roundrect(x, y, 100, 70, 8, 0); 
+  gfx_r = 1; gfx_g = 1; gfx_b = 1; gfx_a = active ? 1 : 0.3;
+  gfx_x = x + 25; gfx_y = y + 25;
+  gfx_setfont(2, "Verdana", 18, 'b');
+  gfx_drawstr(txt);
+);
+
+y_box = 140;
+draw_node(20, y_box, "EP-3", slider1, 0.2, 0.5, 1);
+draw_node(140, y_box, "P77", slider4, 0.3, 1, 0.3);
+draw_node(260, y_box, "AKAI", slider6, 0.9, 0.9, 0.9);
+draw_node(380, y_box, "6G15", slider9, 1, 0.6, 0);
+
+
+gfx_setfont(1, "Arial", 14);
+gfx_r = 0.5; gfx_g = 0.5; gfx_b = 0.5;
+gfx_x = 30; gfx_y = 270; gfx_drawstr("Env Level: "); gfx_drawnumber(follower, 2);
+gfx_x = 30; gfx_y = 290; gfx_drawstr("Attack: "); gfx_drawnumber(slider13, 0); gfx_drawstr("ms");
+gfx_x = 30; gfx_y = 310; gfx_drawstr("Release: "); gfx_drawnumber(slider14, 0); gfx_drawstr("ms");
